@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PWA Google Drive Uploader</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PWA Upload</p>
+        <h1>Google Drive Uploader</h1>
+      </div>
+      <div class="status-strip" aria-live="polite">
+        <span id="backendStatus" class="status">Backend: checking</span>
+        <span id="driveStatus" class="status">Drive: checking</span>
+      </div>
+    </header>
+
+    <section class="controls" aria-label="Upload destination">
+      <label>
+        <span>เขต</span>
+        <select id="region">
+          <option value="reg1">reg1</option>
+          <option value="reg2">reg2</option>
+          <option value="reg3">reg3</option>
+          <option value="reg4">reg4</option>
+          <option value="reg5">reg5</option>
+          <option value="reg6">reg6</option>
+          <option value="reg7">reg7</option>
+          <option value="reg8">reg8</option>
+          <option value="reg9">reg9</option>
+          <option value="reg10">reg10</option>
+        </select>
+      </label>
+
+      <label>
+        <span>รหัสสาขา</span>
+        <input id="branchId" type="text" inputmode="numeric" maxlength="7" placeholder="5531011">
+      </label>
+
+      <label>
+        <span>ชั้นข้อมูล</span>
+        <select id="assetType">
+          <option value="valve">valve</option>
+          <option value="firehydrant">firehydrant</option>
+          <option value="pwa_waterworks">pwa_waterworks</option>
+        </select>
+      </label>
+
+      <label>
+        <span>ประเภทไฟล์</span>
+        <select id="fileType">
+          <option value="picture_path">picture_path</option>
+          <option value="drawing_path">drawing_path</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="workspace">
+      <div id="dropzone" class="dropzone">
+        <div class="upload-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="img">
+            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>
+          </svg>
+        </div>
+        <h2>เลือกไฟล์หรือโฟลเดอร์</h2>
+        <p>ปลายทางจะถูกสร้างเป็น upload_pwa/regX/pwa_XXXXXXX/asset/type</p>
+        <div class="actions">
+          <label class="button primary">
+            Select files
+            <input id="fileInput" class="hidden-input" type="file" multiple>
+          </label>
+          <label class="button secondary">
+            Select folder
+            <input id="folderInput" class="hidden-input" type="file" webkitdirectory directory multiple>
+          </label>
+        </div>
+      </div>
+
+      <aside class="summary" aria-label="Upload summary">
+        <dl>
+          <div>
+            <dt>Queued files</dt>
+            <dd id="fileCount">0</dd>
+          </div>
+          <div>
+            <dt>Total size</dt>
+            <dd id="totalSize">0 B</dd>
+          </div>
+          <div>
+            <dt>Concurrency</dt>
+            <dd>3 files</dd>
+          </div>
+          <div>
+            <dt>Image target</dt>
+            <dd>2 MB</dd>
+          </div>
+        </dl>
+        <div class="overall">
+          <div class="overall-label">
+            <span>Overall progress</span>
+            <strong id="overallPercent">0%</strong>
+          </div>
+          <div class="meter"><span id="overallBar"></span></div>
+        </div>
+        <div class="button-row">
+          <button id="uploadBtn" class="button primary" type="button" disabled>Upload</button>
+          <button id="clearBtn" class="button danger" type="button">Clear</button>
+        </div>
+        <p id="message" class="message" hidden></p>
+      </aside>
+    </section>
+
+    <section class="queue" aria-live="polite">
+      <div class="queue-head">
+        <span>File</span>
+        <span>Size</span>
+        <span>Status</span>
+      </div>
+      <div id="fileList" class="file-list">
+        <div class="empty">No files selected.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/js/upload.js"></script>
+</body>
+</html>

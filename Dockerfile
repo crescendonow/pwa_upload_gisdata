@@ -1,14 +1,12 @@
-FROM python:3.11-bookworm
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+FROM python:3.11-slim
 
 WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY . .
 
-COPY ./app /app/app
-COPY entrypoint.sh /app/entrypoint.sh
+EXPOSE 8000
 
-CMD ["sh", "/app/entrypoint.sh"]
+# ใช้ shell form เพื่อให้ ${PORT} ถูกขยายค่า
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

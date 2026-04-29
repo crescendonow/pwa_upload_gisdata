@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import socket
 from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Optional
 
+import google_auth_httplib2
+import httplib2
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -14,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
 
@@ -28,6 +32,7 @@ UPLOAD_SESSION_URL = "https://www.googleapis.com/upload/drive/v3/files"
 ALLOWED_REGIONS = {f"reg{i}" for i in range(1, 11)}
 ALLOWED_ASSETS = {"valve", "firehydrant", "pwa_waterworks"}
 ALLOWED_FILE_TYPES = {"picture_path", "drawing_path"}
+GOOGLE_API_TIMEOUT_SECONDS = int(os.getenv("GOOGLE_API_TIMEOUT_SECONDS", "15"))
 
 
 app = FastAPI(title="PWA Google Drive Uploader")
@@ -44,10 +49,34 @@ class UploadSessionRequest(BaseModel):
     size: int = Field(ge=0)
 
 
+class TimeoutGoogleAuthRequest(GoogleAuthRequest):
+    def __call__(
+        self,
+        url: str,
+        method: str = "GET",
+        body: Optional[bytes] = None,
+        headers: Optional[dict[str, str]] = None,
+        timeout: float = 120,
+        **kwargs: Any,
+    ) -> Any:
+        return super().__call__(
+            url,
+            method=method,
+            body=body,
+            headers=headers,
+            timeout=GOOGLE_API_TIMEOUT_SECONDS,
+            **kwargs,
+        )
+
+
 class DriveClient:
     def __init__(self) -> None:
         self.credentials = load_credentials()
-        self.service = build("drive", "v3", credentials=self.credentials, cache_discovery=False)
+        authorized_http = google_auth_httplib2.AuthorizedHttp(
+            self.credentials,
+            http=httplib2.Http(timeout=GOOGLE_API_TIMEOUT_SECONDS),
+        )
+        self.service = build("drive", "v3", http=authorized_http, cache_discovery=False)
         self.root_folder_id = get_root_folder_id()
         self.folder_cache: dict[tuple[str, str], str] = {}
 
@@ -102,7 +131,7 @@ class DriveClient:
         return folder_id
 
     def create_upload_session(self, parent_id: str, filename: str, mime_type: str, size: int) -> str:
-        self.credentials.refresh(GoogleAuthRequest())
+        self.credentials.refresh(TimeoutGoogleAuthRequest())
         headers = {
             "Authorization": f"Bearer {self.credentials.token}",
             "Content-Type": "application/json; charset=UTF-8",
@@ -123,7 +152,7 @@ class DriveClient:
             },
             headers=headers,
             json=metadata,
-            timeout=30,
+            timeout=(5, GOOGLE_API_TIMEOUT_SECONDS),
         )
         if response.status_code not in {200, 201}:
             raise HTTPException(
@@ -178,9 +207,18 @@ def create_upload_session(payload: UploadSessionRequest) -> dict[str, Any]:
         *folder_parts,
     )
 
-    drive = get_drive_client()
-    parent_id = drive.ensure_folder_path(destination_folders)
-    upload_url = drive.create_upload_session(parent_id, filename, mime_type, payload.size)
+    try:
+        drive = get_drive_client()
+        parent_id = drive.ensure_folder_path(destination_folders)
+        upload_url = drive.create_upload_session(parent_id, filename, mime_type, payload.size)
+    except HTTPException:
+        raise
+    except HttpError as exc:
+        raise drive_http_exception(exc) from exc
+    except (TimeoutError, socket.timeout, requests.exceptions.Timeout) as exc:
+        raise HTTPException(status_code=502, detail="Google Drive request timed out. Please retry.") from exc
+    except requests.exceptions.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Google Drive request failed: {exc}") from exc
     destination_path = "/".join((*destination_folders, filename))
 
     return {
@@ -234,19 +272,77 @@ def inspect_credentials_config() -> dict[str, Any]:
     if raw_json:
         try:
             parsed = json.loads(raw_json)
+            client_email = parsed.get("client_email", "")
             return {
-                "configured": bool(parsed.get("client_email") and parsed.get("private_key")),
+                "configured": bool(client_email and parsed.get("private_key")),
                 "source": "GOOGLE_SERVICE_ACCOUNT_JSON",
+                "service_account_email": mask_email(client_email),
             }
         except json.JSONDecodeError as exc:
             return {"configured": False, "source": "GOOGLE_SERVICE_ACCOUNT_JSON", "error": str(exc)}
     if credentials_path:
+        service_account_email = ""
+        if os.path.exists(credentials_path):
+            try:
+                with open(credentials_path, encoding="utf-8") as credentials_file:
+                    service_account_email = json.load(credentials_file).get("client_email", "")
+            except (OSError, json.JSONDecodeError):
+                service_account_email = ""
         return {
             "configured": os.path.exists(credentials_path),
             "source": "GOOGLE_APPLICATION_CREDENTIALS",
             "file_exists": os.path.exists(credentials_path),
+            "service_account_email": mask_email(service_account_email),
         }
     return {"configured": False, "source": "missing"}
+
+
+def drive_http_exception(exc: HttpError) -> HTTPException:
+    try:
+        status = int(getattr(exc.resp, "status", 502))
+    except (TypeError, ValueError):
+        status = 502
+    details = parse_google_error_details(exc)
+    reason = details.get("reason", "")
+    message = details.get("message") or str(exc)
+
+    if status == 403 and reason == "insufficientParentPermissions":
+        return HTTPException(
+            status_code=403,
+            detail=(
+                "Google Drive root folder permission is insufficient. Share DRIVE_ROOT_FOLDER_ID "
+                "with the configured service account email as Editor, or add it to the Shared Drive."
+            ),
+        )
+
+    return HTTPException(status_code=502 if status >= 500 else status, detail=f"Google Drive error: {message}")
+
+
+def parse_google_error_details(exc: HttpError) -> dict[str, str]:
+    try:
+        content = exc.content.decode("utf-8") if isinstance(exc.content, bytes) else str(exc.content)
+        payload = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+    error = payload.get("error", {})
+    errors = error.get("errors") or []
+    first_error = errors[0] if errors else {}
+    return {
+        "message": str(first_error.get("message") or error.get("message") or ""),
+        "reason": str(first_error.get("reason") or ""),
+    }
+
+
+def mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return ""
+    local, domain = email.split("@", 1)
+    if len(local) <= 4:
+        masked_local = f"{local[:1]}***"
+    else:
+        masked_local = f"{local[:2]}***{local[-2:]}"
+    return f"{masked_local}@{domain}"
 
 
 def get_root_folder_id() -> str:

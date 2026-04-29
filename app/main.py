@@ -87,6 +87,7 @@ class DriveClient:
         return parent_id
 
     def ensure_folder(self, parent_id: str, folder_name: str) -> str:
+        # Folder creation is idempotent: reuse an exact parent/name match before creating.
         cache_key = (parent_id, folder_name)
         if cache_key in self.folder_cache:
             return self.folder_cache[cache_key]
